@@ -3,7 +3,8 @@
   "version": "5.1.0",
   "description": "A command-line interface to clean-css CSS optimization library",
   "scripts": {
-    "check": "jshint ./bin/cleancss .",
+    "check": "xo",
+    "lint": "xo",
     "prepublish": "npm run check",
     "test": "vows"
   },
@@ -40,11 +41,29 @@
   },
   "devDependencies": {
     "http-proxy": "1.x",
-    "jshint": "^2.12.0",
     "source-map": "0.5.x",
-    "vows": "^0.8.3"
+    "vows": "^0.8.3",
+    "xo": "^0.37.1"
   },
   "engines": {
     "node": ">= 10.12.0"
+  },
+  "xo": {
+    "esnext": true,
+    "space": true,
+    "rules": {
+      "capitalized-comments": "off",
+      "curly": [
+        "error",
+        "multi-line"
+      ],
+      "object-curly-spacing": [
+        "error",
+        "always"
+      ],
+      "spaced-comment": "off",
+      "unicorn/explicit-length-check": "off",
+      "unicorn/prevent-abbreviations": "off"
+    }
   }
 }
