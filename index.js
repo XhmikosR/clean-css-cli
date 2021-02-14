@@ -1,22 +1,44 @@
-var fs = require('fs');
-var path = require('path');
+'use strict';
 
-var CleanCSS = require('clean-css');
-var program = require('commander');
-var glob = require('glob');
+const fs = require('fs');
+const path = require('path');
+const { EOL } = require('os');
 
-var COMPATIBILITY_PATTERN = /([\w\.]+)=(\w+)/g;
-var lineBreak = require('os').EOL;
+const CleanCSS = require('clean-css');
+const program = require('commander');
+const glob = require('glob');
+const { version } = require('./package.json');
+
+const COMPATIBILITY_PATTERN = /([\w.]+)=(\w+)/g;
+
+const HELP = `
+Examples:
+  %> cleancss one.css
+  %> cleancss -o one-min.css one.css
+  %> cleancss -o merged-and-minified.css one.css two.css three.css
+  %> cleancss one.css two.css three.css | gzip -9 -c > merged-minified-and-gzipped.css.gz
+
+Formatting options:
+  %> cleancss --format beautify one.css
+  %> cleancss --format keep-breaks one.css
+  %> cleancss --format "indentBy:1;indentWith:tab" one.css
+  %> cleancss --format "breaks:afterBlockBegins=on;spaces:aroundSelectorRelation=on" one.css
+  %> cleancss --format "breaks:afterBlockBegins=2;spaces:aroundSelectorRelation=on" one.css
+
+Level 0 optimizations:
+  %> cleancss -O0 one.css
+
+Level 1 optimizations:
+  %> cleancss -O1 one.css
+  %> cleancss -O1 removeQuotes:off;roundingPrecision:4;specialComments:1 one.css
+  %> cleancss -O1 all:off;specialComments:1 one.css
+
+Level 2 optimizations:
+  %> cleancss -O2 one.css
+  %> cleancss -O2 mergeMedia:off;restructureRules:off;mergeSemantically:on;mergeIntoShorthands:off one.css
+  %> cleancss -O2 all:off;removeDuplicateRules:on one.css`;
 
 function cli(process, beforeMinifyCallback) {
-  var packageConfig = fs.readFileSync(path.join(__dirname, 'package.json'));
-  var buildVersion = JSON.parse(packageConfig).version;
-  var fromStdin;
-  var inputOptions;
-  var options;
-  var stdin;
-  var data;
-
   beforeMinifyCallback = beforeMinifyCallback || Function.prototype;
 
   // Specify commander options to parse command line params correctly
@@ -28,8 +50,10 @@ function cli(process, beforeMinifyCallback) {
     .option('-f, --format <options>', 'Controls output formatting, see examples below')
     .option('-h, --help', 'display this help')
     .option('-o, --output [output-file]', 'Use [output-file] as output instead of STDOUT')
-    .option('-O <n> [optimizations]', 'Turn on level <n> optimizations; optionally accepts a list of fine-grained options, defaults to `1`, see examples below, IMPORTANT: the prefix is O (a capital o letter), NOT a 0 (zero, a number)', function (val) { return Math.abs(parseInt(val)); })
-    .version(buildVersion, '-v, --version')
+    .option('-O <n> [optimizations]', 'Turn on level <n> optimizations; optionally accepts a list of fine-grained options, defaults to `1`, see examples below, IMPORTANT: the prefix is O (a capital o letter), NOT a 0 (zero, a number)', val => {
+      return Math.abs(Number.parseInt(val, 10));
+    })
+    .version(version, '-v, --version')
     .option('--batch-suffix <suffix>', 'A suffix (without extension) appended to input file name when processing in batch mode (`-min` is the default)', '-min')
     .option('--inline [rules]', 'Enables inlining for listed sources (defaults to `local`)')
     .option('--inline-timeout [seconds]', 'Per connection timeout when fetching remote stylesheets (defaults to 5 seconds)', parseFloat)
@@ -39,59 +63,30 @@ function cli(process, beforeMinifyCallback) {
     .option('--source-map-inline-sources', 'Enables inlining sources inside source maps')
     .option('--with-rebase', 'Enable URLs rebasing');
 
-  program.on('--help', function () {
-    console.log('');
-    console.log('Examples:\n');
-    console.log('  %> cleancss one.css');
-    console.log('  %> cleancss -o one-min.css one.css');
-    console.log('  %> cleancss -o merged-and-minified.css one.css two.css three.css');
-    console.log('  %> cleancss one.css two.css three.css | gzip -9 -c > merged-minified-and-gzipped.css.gz');
-    console.log('');
-    console.log('Formatting options:');
-    console.log('  %> cleancss --format beautify one.css');
-    console.log('  %> cleancss --format keep-breaks one.css');
-    console.log('  %> cleancss --format \'indentBy:1;indentWith:tab\' one.css');
-    console.log('  %> cleancss --format \'breaks:afterBlockBegins=on;spaces:aroundSelectorRelation=on\' one.css');
-    console.log('  %> cleancss --format \'breaks:afterBlockBegins=2;spaces:aroundSelectorRelation=on\' one.css');
-    console.log('');
-    console.log('Level 0 optimizations:');
-    console.log('  %> cleancss -O0 one.css');
-    console.log('');
-    console.log('Level 1 optimizations:');
-    console.log('  %> cleancss -O1 one.css');
-    console.log('  %> cleancss -O1 removeQuotes:off;roundingPrecision:4;specialComments:1 one.css');
-    console.log('  %> cleancss -O1 all:off;specialComments:1 one.css');
-    console.log('');
-    console.log('Level 2 optimizations:');
-    console.log('  %> cleancss -O2 one.css');
-    console.log('  %> cleancss -O2 mergeMedia:off;restructureRules:off;mergeSemantically:on;mergeIntoShorthands:off one.css');
-    console.log('  %> cleancss -O2 all:off;removeDuplicateRules:on one.css');
-
-    process.exit();
-  });
+  program.addHelpText('after', HELP);
 
   program.parse(process.argv);
-  inputOptions = program.opts();
+  const inputOptions = program.opts();
 
   // If no sensible data passed in just print help and exit
   if (program.args.length === 0) {
-    fromStdin = !process.env.__DIRECT__ && !process.stdin.isTTY;
+    const fromStdin = !process.env.__DIRECT__ && !process.stdin.isTTY;
     if (!fromStdin) {
       program.outputHelp();
-      return 0;
+      return;
     }
   }
 
   // Now coerce arguments into CleanCSS configuration...
-  options = {
+  const options = {
     batch: inputOptions.batch,
     compatibility: inputOptions.compatibility,
     format: inputOptions.format,
-    inline: typeof inputOptions.inline == 'string' ? inputOptions.inline : 'local',
+    inline: typeof inputOptions.inline === 'string' ? inputOptions.inline : 'local',
     inlineTimeout: inputOptions.inlineTimeout * 1000,
     level: { 1: true },
     output: inputOptions.output,
-    rebase: inputOptions.withRebase ? true : false,
+    rebase: Boolean(inputOptions.withRebase),
     rebaseTo: inputOptions.withRebase && ('output' in inputOptions) && inputOptions.output.length > 0 ?
       path.dirname(path.resolve(inputOptions.output)) :
       (inputOptions.withRebase ? process.cwd() : undefined),
@@ -99,15 +94,15 @@ function cli(process, beforeMinifyCallback) {
     sourceMapInlineSources: inputOptions.sourceMapInlineSources
   };
 
-  if (program.rawArgs.indexOf('-O0') > -1) {
+  if (program.rawArgs.includes('-O0')) {
     options.level[0] = true;
   }
 
-  if (program.rawArgs.indexOf('-O1') > -1) {
+  if (program.rawArgs.includes('-O1')) {
     options.level[1] = findArgumentTo('-O1', program.rawArgs, program.args);
   }
 
-  if (program.rawArgs.indexOf('-O2') > -1) {
+  if (program.rawArgs.includes('-O2')) {
     options.level[2] = findArgumentTo('-O2', program.rawArgs, program.args);
   }
 
@@ -120,9 +115,9 @@ function cli(process, beforeMinifyCallback) {
     options.sourceMap = false;
   }
 
-  var configurations = {
+  const configurations = {
     batchSuffix: inputOptions.batchSuffix,
-    beforeMinifyCallback: beforeMinifyCallback,
+    beforeMinifyCallback,
     debugMode: inputOptions.debug,
     removeInlinedFiles: inputOptions.removeInlinedFiles,
     inputSourceMap: inputOptions.inputSourceMap
@@ -132,34 +127,35 @@ function cli(process, beforeMinifyCallback) {
   if (program.args.length > 0) {
     minify(process, options, configurations, expandGlobs(program.args));
   } else {
-    stdin = process.openStdin();
+    const stdin = process.openStdin();
     stdin.setEncoding('utf-8');
-    data = '';
-    stdin.on('data', function (chunk) {
+
+    let data = '';
+
+    stdin.on('data', chunk => {
       data += chunk;
     });
-    stdin.on('end', function () {
+
+    stdin.on('end', () => {
       minify(process, options, configurations, data);
     });
   }
 }
 
 function findArgumentTo(option, rawArgs, args) {
-  var value = true;
-  var optionAt = rawArgs.indexOf(option);
-  var nextOption = rawArgs[optionAt + 1];
-  var looksLikePath;
-  var asArgumentAt;
+  let value = true;
+  const optionAt = rawArgs.indexOf(option);
+  const nextOption = rawArgs[optionAt + 1];
 
   if (!nextOption) {
     return value;
   }
 
-  looksLikePath = nextOption.indexOf('.css') > -1 ||
+  const looksLikePath = nextOption.includes('.css') ||
     /\//.test(nextOption) ||
-    /\\[^\-]/.test(nextOption) ||
+    /\\[^-]/.test(nextOption) ||
     /^https?:\/\//.test(nextOption);
-  asArgumentAt = args.indexOf(nextOption);
+  const asArgumentAt = args.indexOf(nextOption);
 
   if (!looksLikePath) {
     value = nextOption;
@@ -173,27 +169,37 @@ function findArgumentTo(option, rawArgs, args) {
 }
 
 function expandGlobs(paths) {
-  var globPatterns = paths.filter(function (path) { return path[0] != '!'; });
-  var ignoredGlobPatterns = paths
-    .filter(function (path) { return path[0] == '!'; })
-    .map(function (path) { return path.substring(1); });
+  const globPatterns = paths.filter(path => path[0] !== '!');
+  const ignoredGlobPatterns = paths
+    .filter(path => path[0] === '!')
+    .map(path => path.slice(1));
 
-  return globPatterns.reduce(function (accumulator, path) {
-    return accumulator.concat(glob.sync(path, { ignore: ignoredGlobPatterns, nodir: true, nonull: true }));
+  return globPatterns.reduce((accumulator, path) => {
+    return accumulator.concat(glob.sync(path, {
+      ignore: ignoredGlobPatterns,
+      nodir: true,
+      nonull: true
+    }));
   }, []);
 }
 
 function minify(process, options, configurations, data) {
-  var cleanCss = new CleanCSS(options);
+  const cleanCss = new CleanCSS(options);
 
   applyNonBooleanCompatibilityFlags(cleanCss, options.compatibility);
   configurations.beforeMinifyCallback(cleanCss);
-  cleanCss.minify(data, getSourceMapContent(configurations.inputSourceMap), function (errors, minified) {
-    var inputPath;
-
+  cleanCss.minify(data, getSourceMapContent(configurations.inputSourceMap), (errors, minified) => {
     if (options.batch && !('styles' in minified)) {
-      for (inputPath in minified) {
-        processMinified(process, configurations, minified[inputPath], inputPath, toOutputPath(inputPath, configurations.batchSuffix));
+      for (const inputPath in minified) {
+        if (Object.prototype.hasOwnProperty.call(minified, inputPath)) {
+          processMinified(
+            process,
+            configurations,
+            minified[inputPath],
+            inputPath,
+            toOutputPath(inputPath, configurations.batchSuffix)
+          );
+        }
       }
     } else {
       processMinified(process, configurations, minified, null, options.output);
@@ -202,32 +208,30 @@ function minify(process, options, configurations, data) {
 }
 
 function toOutputPath(inputPath, batchSuffix) {
-  var extensionName = path.extname(inputPath);
+  const extensionName = path.extname(inputPath);
 
   return inputPath.replace(new RegExp(extensionName + '$'), batchSuffix + extensionName);
 }
 
 function processMinified(process, configurations, minified, inputPath, outputPath) {
-  var mapOutputPath;
-
   if (configurations.debugMode) {
     if (inputPath) {
-      console.error('File: %s', inputPath);
+      console.log('File: %s', inputPath);
     }
 
-    console.error('Original: %d bytes', minified.stats.originalSize);
-    console.error('Minified: %d bytes', minified.stats.minifiedSize);
-    console.error('Efficiency: %d%', ~~(minified.stats.efficiency * 10000) / 100.0);
-    console.error('Time spent: %dms', minified.stats.timeSpent);
+    console.log('Original: %d bytes', minified.stats.originalSize);
+    console.log('Minified: %d bytes', minified.stats.minifiedSize);
+    console.log('Efficiency: %d%', Math.trunc(minified.stats.efficiency * 10000) / 100);
+    console.log('Time spent: %dms', minified.stats.timeSpent);
 
     if (minified.inlinedStylesheets.length > 0) {
-      console.error('Inlined stylesheets:');
-      minified.inlinedStylesheets.forEach(function (uri) {
-        console.error('- %s', uri);
+      console.log('Inlined stylesheets:');
+      minified.inlinedStylesheets.forEach(uri => {
+        console.log('- %s', uri);
       });
     }
 
-    console.error('');
+    console.log('');
   }
 
   outputFeedback(minified.errors, true);
@@ -238,12 +242,12 @@ function processMinified(process, configurations, minified, inputPath, outputPat
   }
 
   if (configurations.removeInlinedFiles) {
-    minified.inlinedStylesheets.forEach(fs.unlinkSync);
+    minified.inlinedStylesheets.forEach(file => fs.unlinkSync(file));
   }
 
   if (minified.sourceMap) {
-    mapOutputPath = outputPath + '.map';
-    output(process, outputPath, minified.styles + lineBreak + '/*# sourceMappingURL=' + path.basename(mapOutputPath) + ' */');
+    const mapOutputPath = outputPath + '.map';
+    output(process, outputPath, minified.styles + EOL + '/*# sourceMappingURL=' + path.basename(mapOutputPath) + ' */');
     outputMap(mapOutputPath, minified.sourceMap);
   } else {
     output(process, outputPath, minified.styles);
@@ -251,21 +255,18 @@ function processMinified(process, configurations, minified, inputPath, outputPat
 }
 
 function applyNonBooleanCompatibilityFlags(cleanCss, compatibility) {
-  var match;
-  var scope;
-  var parts;
-  var i, l;
-
   if (!compatibility) {
     return;
   }
 
+  let match;
+
   patternLoop:
   while ((match = COMPATIBILITY_PATTERN.exec(compatibility)) !== null) {
-    scope = cleanCss.options.compatibility;
-    parts = match[1].split('.');
+    let scope = cleanCss.options.compatibility;
+    const parts = match[1].split('.');
 
-    for (i = 0, l = parts.length - 1; i < l; i++) {
+    for (let i = 0, len = parts.length - 1; i < len; i++) {
       scope = scope[parts[i]];
 
       if (!scope) {
@@ -278,9 +279,9 @@ function applyNonBooleanCompatibilityFlags(cleanCss, compatibility) {
 }
 
 function outputFeedback(messages, isError) {
-  var prefix = isError ? '\x1B[31mERROR\x1B[39m:' : 'WARNING:';
+  const prefix = isError ? '\u001B[31mERROR\u001B[39m:' : 'WARNING:';
 
-  messages.forEach(function (message) {
+  messages.forEach(message => {
     console.error('%s %s', prefix, message);
   });
 }
@@ -289,11 +290,12 @@ function getSourceMapContent(sourceMapPath) {
   if (!sourceMapPath || !fs.existsSync(sourceMapPath)) {
     return null;
   }
-  var content = null;
+
+  let content = null;
 
   try {
     content = fs.readFileSync(sourceMapPath).toString();
-  } catch (e) {
+  } catch {
     console.error('Failed to read the input source map file.');
   }
 
@@ -302,7 +304,7 @@ function getSourceMapContent(sourceMapPath) {
 
 function output(process, outputPath, minified) {
   if (outputPath) {
-    fs.mkdirSync(path.dirname(outputPath), {recursive: true});
+    fs.mkdirSync(path.dirname(outputPath), { recursive: true });
     fs.writeFileSync(outputPath, minified, 'utf8');
   } else {
     process.stdout.write(minified);
